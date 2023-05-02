@@ -1,9 +1,11 @@
 package gofakes3
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math/big"
 	"net/url"
 	"strings"
@@ -515,4 +517,67 @@ func (mpu *multipartUpload) Reassemble(input *CompleteMultipartUploadRequest) (b
 	hash := fmt.Sprintf("%x", md5.Sum(body))
 
 	return body, hash, nil
+}
+
+type multipartBackend struct {
+	storage  Backend
+	uploader *uploader
+}
+
+func (b *multipartBackend) AbortMultipartUpload(bucketName, key string, id UploadID) error {
+	_, err := b.uploader.Complete(bucketName, key, id)
+	return err
+}
+
+func (b *multipartBackend) CompleteMultipartUpload(bucketName, key string, id UploadID, req *CompleteMultipartUploadRequest) (*PutObjectResult, string, error) {
+	upload, err := b.uploader.Complete(bucketName, key, id)
+	if err != nil {
+		return nil, "", err
+	}
+
+	fileBody, etag, err := upload.Reassemble(req)
+	if err != nil {
+		return nil, "", err
+	}
+
+	result, err := b.storage.PutObject(bucketName, key, upload.Meta, bytes.NewReader(fileBody), int64(len(fileBody)))
+	if err != nil {
+		return nil, "", err
+	}
+	return &result, etag, nil
+}
+
+func (b *multipartBackend) CreateMultipartUpload(bucketName, key string, meta map[string]string, initiated time.Time) (UploadID, error) {
+	upload := b.uploader.Begin(bucketName, key, meta, initiated)
+	return upload.ID, nil
+}
+
+func (b *multipartBackend) ListParts(bucketName, key string, id UploadID, marker int, limit int64) (*ListMultipartUploadPartsResult, error) {
+	return b.uploader.ListParts(bucketName, key, id, marker, limit)
+}
+
+func (b *multipartBackend) ListMultipartUploads(bucketName string, marker *UploadListMarker, prefix Prefix, limit int64) (*ListMultipartUploadsResult, error) {
+	return b.uploader.List(bucketName, marker, prefix, limit)
+}
+
+func (b *multipartBackend) UploadPart(bucketName, key string, id UploadID, partNumber int, input io.Reader, size int64, added time.Time) (etag string, err error) {
+	upload, err := b.uploader.Get(bucketName, key, id)
+	if err != nil {
+		// FIXME: What happens with S3 when you abort a multipart upload while
+		// part uploads are still in progress? In this case, we will retain the
+		// reference to the part even though another request goroutine may
+		// delete it; it will be available for GC when this function finishes.
+		return "", err
+	}
+
+	body, err := ReadAll(input, size)
+	if err != nil {
+		return "", err
+	}
+
+	if int64(len(body)) != size {
+		return "", ErrIncompleteBody
+	}
+
+	return upload.AddPart(int(partNumber), added, body)
 }

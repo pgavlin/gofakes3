@@ -2,6 +2,7 @@ package gofakes3
 
 import (
 	"io"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
 )
@@ -230,6 +231,25 @@ type Backend interface {
 	PutObject(bucketName, key string, meta map[string]string, input io.Reader, size int64) (PutObjectResult, error)
 
 	DeleteMulti(bucketName string, objects ...string) (MultiDeleteResult, error)
+}
+
+// MultipartBackend provides a set of operations to be implemented in order to support
+// multipart uploads.
+//
+// If you don't implement MultipartBackend, GoFakeS3 will use a default implementation.
+type MultipartBackend interface {
+	// AbortMultipartUpload aborts a multipart upload.
+	AbortMultipartUpload(bucketName, key string, id UploadID) error
+	// CompleteMultipartUpload completes a multipart upload.
+	CompleteMultipartUpload(bucketName, key string, id UploadID, req *CompleteMultipartUploadRequest) (result *PutObjectResult, etag string, err error)
+	// CreateMultipartUpload creates a multipart upload.
+	CreateMultipartUpload(bucketName, key string, meta map[string]string, initiated time.Time) (UploadID, error)
+	// ListParts lists the parts of a multipart upload.
+	ListParts(bucketName, key string, uploadID UploadID, marker int, limit int64) (*ListMultipartUploadPartsResult, error)
+	// ListMultipartUploads lists multipart uploads.
+	ListMultipartUploads(bucketName string, marker *UploadListMarker, prefix Prefix, limit int64) (*ListMultipartUploadsResult, error)
+	// UploadPart uploads a part to a multipart upload.
+	UploadPart(bucketName, key string, id UploadID, partNumber int, input io.Reader, size int64, added time.Time) (etag string, err error)
 }
 
 // VersionedBackend may be optionally implemented by a Backend in order to support
